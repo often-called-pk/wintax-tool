@@ -27,7 +27,9 @@ Haiku implements, Sonnet reviews and fixes, Fable escalates, Opus orchestrates.
 - [x] **G2** Tkinter GUI: ECU IP + input and output folder fields, buttons, live log pane, progress, metrics summary, config memory. Sonnet-verified, 21 tests pass.
 - [x] **G3** Packaging: PyInstaller one-file Windows exe, `build_windows.bat`, CI workflow. Sonnet-approved; Linux build and frozen-window launch verified.
 - [x] **Docs** `USER_GUIDE.md` (layman steps) and `BUILD.md` (build the exe). STE-clean.
-- [ ] **Final review** whole-branch (Sonnet, report only), then finish on branch `feat/app-session-core`.
+- [x] **Final review** whole-branch (Sonnet): code sound, safety verified, 24 tests pass. Verdict: pilot-ready, not mass-ready until gates.
+- [ ] **Fixes** I1-I6 and cheap minors (Sonnet, in progress). USER_GUIDE fixes (orchestrator, in progress).
+- [ ] **Gates before wide distribution**: owner bench-tests the real exe on a known ECU (the live download never ran here). Keep the repo PRIVATE (password, serial, driver name tracked).
 
 ## Backlog
 
