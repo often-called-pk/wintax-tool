@@ -25,8 +25,9 @@ Haiku implements, Sonnet reviews and fixes, Fable escalates, Opus orchestrates.
 
 - [x] **G1** Session core (headless): download, discover, decode, deep logs, `run.json` metrics, results zip. Reuses `src/`. Sonnet-verified, 11 tests pass.
 - [x] **G2** Tkinter GUI: ECU IP + input and output folder fields, buttons, live log pane, progress, metrics summary, config memory. Sonnet-verified, 21 tests pass.
-- [ ] **G3** Packaging: PyInstaller one-file Windows exe, `build_windows.bat`, CI workflow. (Haiku, in progress.)
-- [ ] **Docs** `USER_GUIDE.md` (layman), `BUILD.md` (owner writes).
+- [x] **G3** Packaging: PyInstaller one-file Windows exe, `build_windows.bat`, CI workflow. Sonnet-approved; Linux build and frozen-window launch verified.
+- [x] **Docs** `USER_GUIDE.md` (layman steps) and `BUILD.md` (build the exe). STE-clean.
+- [ ] **Final review** whole-branch (Sonnet, report only), then finish on branch `feat/app-session-core`.
 
 ## Backlog
 

@@ -50,4 +50,9 @@ Task G2: fix round 1 dispatched to Sonnet (persistent session; plus arming dialo
 Task G2: fix round 1 commit 1712e39, 21 tests pass. Persistent session (zip named by alias, run.json carries device). Arming dialog default No; metrics line uses recorded throughput; real socket error shown.
 Ruling: stale-identity-on-car-swap-in-one-folder deferred. Why: edge case (user reuses one output folder across different cars without clicking Test); run.json still has ecu_ip and timestamps. Add a beacon refresh at Download start if car-swapping becomes common. Cost if wrong: a bundle mislabeled by alias when a user swaps cars without re-testing.
 Task G2: complete (commits 32bf4da..1712e39, 21/21 tests, review clean). Deferred minors (final review): G1 sticky status/error across session; zip run.json finished=null until close; close-while-busy writes no final record; download-failed shows msg only in status.
-Task G3: dispatched to Haiku.
+Task G3: dispatched to Haiku (BASE 0351d4c).
+Task G3: implemented by Haiku, commit 4f246fe. Linux PyInstaller build passes; frozen window launches under xvfb; PYZ holds wtx_client/wtx_decode/decrypt_ztx/wtx_fileformat/wtxapp/scipy.io.matlab/tkinter. DONE_WITH_CONCERNS.
+Deferred: Windows exe not built here (CI/bat is the real check); actionlint skipped (perm denied in auto-mode, not bypassed); harmless scipy.special._cdflib hook warning.
+Task G3: review dispatched to Sonnet.
+Task G3: complete (commit 4f246fe, APPROVED, no fixes). Import graph traced, hiddenimports complete, action tags verified live. Deferred minors: frozen scipy only statically proven (first Windows exe: decode a lap, confirm .mat); CI artifact is a zip (BUILD.md reworded); g3-report UPX note wrong (harmless). Docs USER_GUIDE.md + BUILD.md written, STE-clean.
+Final whole-branch review: dispatched to Sonnet (report only), MERGE_BASE eb65d83..HEAD.
