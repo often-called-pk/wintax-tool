@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+out/
+tests/out/
+build/
+dist/
+*.spec.bak
+*.zip
+artifacts/*.bin
+.sdd/*.diff
