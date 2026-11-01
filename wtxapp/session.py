@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import socket
 import sys
 import threading
@@ -34,6 +35,11 @@ def _now():
 
 def _stamp():
     return time.strftime("%Y%m%d_%H%M%S")
+
+
+def _safe(text):
+    """Return text that is safe in a file name. The IP field and the beacon are not trusted."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)
 
 
 class _OneLine(logging.Formatter):
@@ -173,7 +179,10 @@ class RunSession:
 
     # This method sends the SET that arms the ECU (wtx_client.download). Call it on a user action only.
     def download(self):
-        """Download the raw data blob from the ECU. Return the blob path, or None on failure."""
+        """Download the raw data blob from the ECU. Return the blob path, or None on failure.
+
+        The ECU sends no end-of-stream flag, so the metrics mark the download as unconfirmed.
+        """
         blob = self.dir / "download" / f"download_raw_{_stamp()}.bin"
         box = {}
 
@@ -200,10 +209,16 @@ class RunSession:
                 self._error("The download failed.", e)
                 return None
             self.metrics["download"] = {
+                # ponytail: bytes over the whole call, idle wait included. Time the last growth if that skews it.
                 "bytes": size, "throughput_bps": size / max(dur, 1e-3),
                 "out_file": str(blob), "sha256": sha,
+                # ponytail: wtx_client.download gives no clean-end flag. Add a check when the ECU can confirm one.
+                "completeness": "unconfirmed",
             }
         self.log.info("The download finished: %d bytes, sha256 %s.", size, sha)
+        self.log.warning("The session cannot confirm that the download is complete. "
+                         "The ECU sends no end-of-stream flag, so a download that ends on the idle timeout "
+                         "can be partial. Confirm the data against the ECU.")
         self._emit({"type": "done", "msg": f"The download finished: {size} bytes.", "path": str(blob)})
         self._write_metrics()
         return str(blob)
@@ -237,6 +252,9 @@ class RunSession:
         src = Path(input_path).resolve()
         out = self.dir / "decoded"
         with self._phase("decode"):
+            if not str(input_path).strip():  # Path("") is the working folder. Do not walk it.
+                self._error("The input path is empty. Choose a lap file or a folder.")
+                return None
             tree = src if src.is_dir() else src.parent
             # Refuse output inside the input. The input folder must stay unchanged.
             if out.resolve().is_relative_to(tree):
@@ -276,11 +294,13 @@ class RunSession:
     def package_results(self):
         """Zip the logs, the raw downloads and the decoded summaries. Return the zip path.
 
-        The user sends this zip back.
+        The zip name holds the beacon alias, else the ECU IP. The user sends this zip back.
+        Raise OSError when the zip cannot be written.
         """
         self._write_metrics()
-        # ponytail: the beacon has no serial field. The zip name uses the ECU IP.
-        zip_path = self.dir / f"wtx_results_{self.ecu_ip}_{_stamp()}.zip"
+        # ponytail: the beacon has no serial field. The zip name uses the beacon alias, else the ECU IP.
+        tag = self.metrics["device"].get("alias", "").strip() or self.ecu_ip
+        zip_path = self.dir / f"wtx_results_{_safe(tag)}_{_stamp()}.zip"
         files = [p for d in ("logs", "download") for p in (self.dir / d).rglob("*") if p.is_file()]
         files += self.dir.glob("decoded/**/summary.csv")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:

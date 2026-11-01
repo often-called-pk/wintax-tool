@@ -7,6 +7,7 @@ test lap (TESTLAP) and decode it into a temporary folder.
 Run with: python3 -I tests/test_app.py
 Prints PASS per check. Exits 1 on the first failure.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -85,8 +86,32 @@ def check_download_ok():
         assert d["bytes"] == FAKE_N, d
         assert len(d["sha256"]) == 64 and set(d["sha256"]) <= set("0123456789abcdef"), d
         assert s.metrics["status"] == "ok", s.metrics
-        assert any(e["type"] == "progress" for e in events)
+        progress = [e for e in events if e["type"] == "progress"]
+        assert progress and progress[-1]["bytes"] == FAKE_N and "rate_bps" in progress[-1], progress
+        assert d["sha256"] == hashlib.sha256(Path(blob).read_bytes()).hexdigest(), d
         assert any(e["type"] == "done" for e in events)
+
+
+def check_download_completeness():
+    """The ECU sends no end-of-stream flag, so a finished download is never confirmed complete."""
+    events = []
+    with tempfile.TemporaryDirectory() as tmp:
+        with mock.patch.object(wtx_client, "download", fake_download):
+            with RunSession(tmp, on_event=events.append) as s:
+                assert s.download()
+        assert s.metrics["status"] == "ok", s.metrics
+        assert s.metrics["download"]["completeness"] == "unconfirmed", s.metrics
+        run = json.loads(next(Path(tmp, "logs").glob("run_*.json")).read_text(encoding="utf-8"))
+        assert run["download"]["completeness"] == "unconfirmed", run
+        warnings = [e["msg"] for e in events if e["type"] == "log" and e["level"] == "WARNING"]
+        assert any("partial" in m and "Confirm" in m for m in warnings), warnings
+        log_text = next(Path(tmp, "logs").glob("wtx_*.log")).read_text(encoding="utf-8")
+        assert "WARNING" in log_text and "partial" in log_text, log_text
+    with tempfile.TemporaryDirectory() as tmp:  # A failed download has no completeness to report.
+        with mock.patch.object(wtx_client, "download", failing_download):
+            with RunSession(tmp) as s:
+                assert s.download() is None
+        assert "completeness" not in s.metrics["download"], s.metrics
 
 
 def check_download_error():
@@ -154,6 +179,24 @@ def check_decode_refuses_output_inside_input():
         assert not Path(src, "decoded").exists(), "The decode wrote output inside the input."
 
 
+def check_decode_empty_path():
+    """An empty input path is refused. It must not mean the working folder."""
+    here = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp, "work", "Lap")
+        work.mkdir(parents=True)
+        shutil.copy(TESTLAP, work / "cableData.ztx")  # A walk of the working folder would decode this lap.
+        os.chdir(work.parent)
+        try:
+            with RunSession(Path(tmp, "session")) as s:
+                assert s.decode("") is None
+                assert s.decode("  ") is None
+        finally:
+            os.chdir(here)
+        assert s.metrics["status"] == "error", s.metrics
+        assert not Path(tmp, "session", "decoded").exists(), "The decode walked the working folder."
+
+
 def check_package_results():
     with tempfile.TemporaryDirectory() as tmp:
         with mock.patch.object(wtx_client, "download", fake_download):
@@ -161,6 +204,7 @@ def check_package_results():
                 blob = s.download()
                 Path(tmp, "decoded", "lap").mkdir(parents=True)
                 Path(tmp, "decoded", "lap", "summary.csv").write_text("name,rate_hz\n", encoding="utf-8")
+                Path(tmp, "decoded", "summary.csv").write_text("name,rate_hz\n", encoding="utf-8")  # one lap
                 zip_path = s.package_results()
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
@@ -168,19 +212,43 @@ def check_package_results():
         assert any(n.startswith("logs/wtx_") and n.endswith(".log") for n in names), sorted(names)
         assert any(n.startswith("logs/run_") and n.endswith(".json") for n in names), sorted(names)
         assert "download/" + Path(blob).name in names, sorted(names)
-        assert "decoded/lap/summary.csv" in names, sorted(names)
+        assert "decoded/lap/summary.csv" in names and "decoded/summary.csv" in names, sorted(names)
         assert Path(zip_path).name.startswith("wtx_results_192.168.111.254_"), zip_path
+
+
+def check_package_zip_name():
+    """The zip name holds the beacon alias when discover found one, else the ECU IP. It stays one safe name."""
+    def zip_name(listen, ecu_ip=wtx_client.ECU_IP_DEFAULT):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(wtx_client, "listen_beacon", listen):
+                with RunSession(tmp, ecu_ip=ecu_ip) as s:
+                    if listen is not None:
+                        s.discover()
+                    zip_path = Path(s.package_results())
+            assert zip_path.parent == Path(tmp).resolve() and zip_path.is_file(), zip_path
+            return zip_path.name
+
+    ip = wtx_client.ECU_IP_DEFAULT
+    assert zip_name(lambda timeout=5.0: BEACON).startswith("wtx_results_F4_106_")
+    hostile = BEACON._replace(alias="../x y:z")  # The beacon is not trusted. Keep the name one file name.
+    assert zip_name(lambda timeout=5.0: hostile).startswith("wtx_results_.._x_y_z_")
+    assert zip_name(mock.Mock(side_effect=socket.timeout())).startswith(f"wtx_results_{ip}_")  # no beacon
+    assert zip_name(lambda timeout=5.0: BEACON._replace(alias="")).startswith(f"wtx_results_{ip}_")
+    assert zip_name(None, ecu_ip="my ecu/1").startswith("wtx_results_my_ecu_1_")
 
 
 CHECKS = [
     check_session_log_and_metrics,
     check_download_ok,
+    check_download_completeness,
     check_download_error,
     check_discover,
     check_decode_real_lap,
     check_decode_folder_best_effort,
     check_decode_refuses_output_inside_input,
+    check_decode_empty_path,
     check_package_results,
+    check_package_zip_name,
 ]
 
 if __name__ == "__main__":
