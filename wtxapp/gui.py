@@ -2,6 +2,8 @@
 
 Each session call runs on a worker thread. The session calls on_event. The callback only puts the event on a queue.
 The window reads the queue on the Tk thread every 100 ms. No other thread touches a widget.
+The window keeps one RunSession for each output folder. Every button uses it, so the ECU identity that Test
+connection reads reaches the download record and the name of the results zip.
 """
 import ipaddress
 import json
@@ -12,7 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from contextlib import closing
+from contextlib import suppress
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -92,12 +94,22 @@ def run_if_confirmed(confirm, start):
 
 
 # Each job runs one session call. It returns the fields for the end event, or None.
+# The end event takes msg (the status line), path (a result file: its folder opens) and summary (the metrics line).
 def _test(s, inp):
-    return {"msg": beacon_text(s.discover())}
+    before = s.metrics.get("error")  # The metrics keep the last error. A new error object means that this call failed.
+    beacon = s.discover()
+    error = s.metrics.get("error")
+    if beacon is None and error is not before:
+        return {"msg": f"The ECU search failed. {error['type']}: {error['msg']}"}
+    return {"msg": beacon_text(beacon)}
 
 
 def _download(s, inp):
-    s.download()
+    if s.download():
+        # The last progress event shows the rate of the last 0.2 s. After an idle end that is 0.0. Show the average.
+        d = s.metrics["download"]
+        stats = {"bytes": d["bytes"], "rate_bps": d["throughput_bps"]}
+        return {"summary": progress_text(stats, s.metrics["phases"]["download"]["dur_s"])}
 
 
 def _decode(s, inp):
@@ -128,6 +140,7 @@ class App:
         self.events = queue.Queue(maxsize=10000)  # ponytail: bounded. The window drains it every 100 ms, so it stays short.
         self.busy = False
         self.t0 = 0.0
+        self.session = None  # The worker thread sets it. The Tk thread reads it only when no job runs.
         cfg = load_config()
         self.ip_var, self.in_var, self.out_var = (tk.StringVar(value=cfg[k]) for k in ("ecu_ip", "input", "output"))
         self.status = tk.StringVar(value="The app is ready.")
@@ -221,20 +234,22 @@ class App:
         if self.busy and not messagebox.askyesno(TITLE, "An operation is still running. Close the app anyway?"):
             return
         self.root.after_cancel(self._job)
+        if not self.busy:  # A running job still uses the session. The end of the process stops it.
+            self._close()
         self.root.destroy()
 
     def _confirm_arm(self):
-        return messagebox.askyesno(TITLE, "This arms the ECU and stops its logger while the download runs. Continue?")
+        return messagebox.askyesno(TITLE, "This arms the ECU and stops its logger while the download runs. Continue?",
+                                   default=messagebox.NO)
 
     def _inputs(self, need_ip):
         """Return (ip, output, input) when the fields pass. Otherwise show the reason and return None.
 
         Test connection and Download need a valid ECU IP.
-        Decode and Package run offline. A wrong ECU IP must not stop them. They use the field text as it is.
+        Decode and Package run offline. A wrong ECU IP must not stop them, so they get None for the IP.
         """
         try:
-            text = self.ip_var.get().strip()
-            ip = check_ip(text) if need_ip else (text or wtx_client.ECU_IP_DEFAULT)
+            ip = check_ip(self.ip_var.get()) if need_ip else None
             out = check_output(self.out_var.get(), self.in_var.get())
         except ValueError as e:
             messagebox.showerror(TITLE, str(e))
@@ -252,11 +267,37 @@ class App:
     def _worker(self, ip, out, inp, job):
         end = {}
         try:
-            with closing(RunSession(out, ecu_ip=ip, on_event=self.events.put)) as s:
-                end = job(s, inp) or {}
+            end = job(self._session_for(out, ip), inp) or {}
         except Exception as e:  # Any failure must still end the job, or the buttons stay disabled.
             self.events.put({"type": "error", "msg": f"The run stopped. {type(e).__name__}: {e}"})
         self.events.put({"type": "end", **end})
+
+    def _session_for(self, out, ip):
+        """Return the session of the output folder. Run this on the worker thread.
+
+        A new output folder closes the old session and starts a new one. The same folder keeps its session.
+        The ECU identity that Test connection reads then stays in the metrics. The download record and the zip name use it.
+        A valid ECU IP (ip is not None) goes to the session before the job runs.
+        """
+        # ponytail: the identity stays until the next Test connection finds an ECU. Download does not read the beacon.
+        # Add that read to Download when users swap cars without a Test.
+        s = self.session
+        if s is None or s.dir != Path(out):
+            self._close()
+            s = self.session = RunSession(out, ecu_ip=ip or wtx_client.ECU_IP_DEFAULT, on_event=self.events.put)
+        else:
+            if ip:
+                s.ecu_ip = s.metrics["ecu_ip"] = ip
+            for name in ("logs", "download"):  # A user can delete these folders between two jobs. The download needs them.
+                (s.dir / name).mkdir(parents=True, exist_ok=True)
+        return s
+
+    def _close(self):
+        """Close the session and forget it. A disk error here must not stop the app."""
+        s, self.session = self.session, None
+        if s is not None:
+            with suppress(OSError):
+                s.close()
 
     def _drain(self):
         """Apply the queued events on the Tk thread. Schedule this method again in 100 ms."""
@@ -282,6 +323,8 @@ class App:
             self._busy(False)
             if ev.get("msg"):
                 self.status.set(ev["msg"])
+            if ev.get("summary"):
+                self.metrics.set(ev["summary"])
             if ev.get("path"):
                 open_folder(Path(ev["path"]).parent)
 

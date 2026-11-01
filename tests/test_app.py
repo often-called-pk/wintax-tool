@@ -11,6 +11,7 @@ Prints PASS per check. Exits 1 on the first failure.
 import hashlib
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -53,6 +54,14 @@ def fake_download(ip, out_path, *args, **kwargs):
 def failing_download(ip, out_path, *args, **kwargs):
     """Stand-in for wtx_client.download that fails the control handshake."""
     raise wtx_client.ProtocolError("bad ack for op 0x1")
+
+
+def idle_download(ip, out_path, *args, **kwargs):
+    """Stand-in for wtx_client.download that ends on the idle timeout: all bytes at once, then silence."""
+    with open(out_path, "wb") as f:
+        f.write(b"\x5a" * FAKE_N)
+    time.sleep(0.7)  # The progress poll sees no growth, so the last rates are 0.0.
+    return FAKE_N
 
 
 def failing_callback(event):
@@ -308,19 +317,23 @@ def check_gui_beacon_text():
 
 
 class Field:
-    """Stand-in for a Tk StringVar. The App handlers only call get()."""
+    """Stand-in for a Tk StringVar. The App handlers call get() and set()."""
 
-    def __init__(self, value):
+    def __init__(self, value=""):
         self.value = value
 
     def get(self):
         return self.value
+
+    def set(self, value):
+        self.value = value
 
 
 def make_app(ip, input_path, output):
     """Return an App without a window. The button handlers read three fields. _start records its job and IP."""
     app = App.__new__(App)
     app.ip_var, app.in_var, app.out_var = Field(ip), Field(input_path), Field(output)
+    app.events, app.session = queue.Queue(), None
     app.started = []
     app._start = lambda label, found, job: app.started.append((job, found[0]))
     return app
@@ -329,7 +342,7 @@ def make_app(ip, input_path, output):
 def check_gui_ip_scope():
     """Test connection and Download need a valid ECU IP. Decode, Package and Open results run offline.
 
-    This check builds no window, so it runs on any machine.
+    An offline job gets no IP. This check builds no window, so it runs on any machine.
     """
     shown, opened = [], []
     with tempfile.TemporaryDirectory() as tmp:
@@ -337,15 +350,14 @@ def check_gui_ip_scope():
         src.mkdir()
         out.mkdir()
         with mock.patch.object(gui.messagebox, "showerror", lambda title, msg: shown.append(msg)), \
-                mock.patch.object(gui.messagebox, "askyesno", lambda title, msg: True), \
+                mock.patch.object(gui.messagebox, "askyesno", lambda title, msg, **options: True), \
                 mock.patch.object(gui, "open_folder", opened.append):
             for ip in ("ecu.local", "999.1.1.1", ""):  # None of these is an IPv4 address.
                 app = make_app(ip, str(src), str(out))
                 app.on_decode()
                 app.on_package()
                 app.on_open()
-                used = ip or wtx_client.ECU_IP_DEFAULT  # A blank field falls back to the default.
-                assert app.started == [(gui._decode, used), (gui._package, used)], (ip, app.started)
+                assert app.started == [(gui._decode, None), (gui._package, None)], (ip, app.started)
                 assert opened == [out.resolve()] and not shown, (ip, opened, shown)
                 opened.clear()
                 app = make_app(ip, str(src), str(out))
@@ -354,11 +366,91 @@ def check_gui_ip_scope():
                 assert app.started == [], (ip, app.started)
                 assert len(shown) == 2 and all("IPv4" in m for m in shown), (ip, shown)
                 shown.clear()
-            app = make_app("10.0.0.7", str(src), str(out))  # A valid IP reaches all four jobs.
+            app = make_app("10.0.0.7", str(src), str(out))  # A valid IP reaches all four jobs. Only two use it.
             for press in (app.on_test, app.on_download, app.on_decode, app.on_package):
                 press()
-            jobs = [gui._test, gui._download, gui._decode, gui._package]
-            assert app.started == [(job, "10.0.0.7") for job in jobs] and not shown, (app.started, shown)
+            ecu = "10.0.0.7"
+            expected = [(gui._test, ecu), (gui._download, ecu), (gui._decode, None), (gui._package, None)]
+            assert app.started == expected and not shown, (app.started, shown)
+
+
+def check_gui_arm_dialog():
+    """The arming dialog makes No the default button. A stray Enter then does not arm the ECU."""
+    seen = {}
+
+    def ask(title, message, **options):
+        seen.update(options, message=message)
+        return False
+
+    with mock.patch.object(gui.messagebox, "askyesno", ask):
+        assert make_app("", "", "")._confirm_arm() is False
+    assert seen.get("default") == gui.messagebox.NO and "arms the ECU" in seen["message"], seen
+
+
+def check_gui_test_job():
+    """Test connection names the error of a failed beacon read. Only a timeout reads No ECU found."""
+    with tempfile.TemporaryDirectory() as tmp:
+        with RunSession(tmp) as s:
+            with mock.patch.object(wtx_client, "listen_beacon", side_effect=OSError("address in use")):
+                msg = gui._test(s, "")["msg"]
+            assert "OSError" in msg and "address in use" in msg and "No ECU" not in msg, msg
+            with mock.patch.object(wtx_client, "listen_beacon", side_effect=socket.timeout()):
+                # The error above stays in the metrics. It must not turn a plain timeout into an error.
+                assert gui._test(s, "") == {"msg": "No ECU found."}
+            with mock.patch.object(wtx_client, "listen_beacon", lambda timeout=5.0: BEACON):
+                assert "F4_106" in gui._test(s, "")["msg"]
+
+
+def check_gui_session_reuse():
+    """The window keeps one session for each output folder.
+
+    The beacon that Test connection reads reaches the run record of the download and the name of the zip.
+    A new output folder starts a new session. This check builds no window.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out, other = Path(tmp, "out").resolve(), Path(tmp, "other").resolve()
+        app = make_app("", "", "")
+        events = []
+
+        def press(job, ip, folder=out):
+            """Run one job the way a button does. Keep the events that it queued."""
+            app._worker(ip, str(folder), "", job)
+            while not app.events.empty():
+                events.append(app.events.get_nowait())
+
+        with mock.patch.object(wtx_client, "listen_beacon", lambda timeout=5.0: BEACON), \
+                mock.patch.object(wtx_client, "download", idle_download):
+            press(gui._test, wtx_client.ECU_IP_DEFAULT)
+            first = app.session
+            assert first.metrics["device"]["alias"] == "F4_106", first.metrics["device"]
+            shutil.rmtree(out / "download")  # The user can delete a folder between two jobs. A download needs it.
+            press(gui._download, "10.0.0.7")
+            press(gui._package, None)  # An offline job leaves the ECU IP as it is.
+        assert app.session is first, "The window built a new session for the same folder."
+        assert first.ecu_ip == first.metrics["ecu_ip"] == "10.0.0.7", (first.ecu_ip, first.metrics["ecu_ip"])
+        assert not [e for e in events if e["type"] == "error"], events
+        (zip_path,) = out.glob("wtx_results_*.zip")
+        assert zip_path.name.startswith("wtx_results_F4_106_"), zip_path.name  # The alias, not the IP.
+        with zipfile.ZipFile(zip_path) as zf:
+            (run_name,) = [n for n in zf.namelist() if n.startswith("logs/run_")]  # One session, one run record.
+            record = json.loads(zf.read(run_name))
+        assert record["device"]["alias"] == "F4_106" and record["download"]["bytes"] == FAKE_N, record
+        # The download ended on silence. The last progress event shows 0.0, the final line shows the average.
+        assert [e for e in events if e["type"] == "progress"][-1]["rate_bps"] == 0.0
+        (end,) = [e for e in events if e["type"] == "end" and "summary" in e]
+        assert "4,096 bytes" in end["summary"] and "0.0 kB/s" not in end["summary"], end
+        app.status, app.metrics, app._busy = Field(), Field(), lambda busy: None
+        app._apply(end)
+        assert app.metrics.get() == end["summary"], app.metrics.get()
+        press(gui._package, None, other)  # A new output folder closes the old session. The identity stays behind.
+        second = app.session
+        assert second is not first and second.dir == other, second.dir
+        assert first.metrics["finished"] is not None, "The old session stayed open."
+        assert second.metrics["device"] == {} and second.ecu_ip == wtx_client.ECU_IP_DEFAULT, second.metrics
+        (zip_two,) = other.glob("wtx_results_*.zip")
+        assert zip_two.name.startswith(f"wtx_results_{wtx_client.ECU_IP_DEFAULT}_"), zip_two.name
+        app._close()
+        assert app.session is None and second.metrics["finished"] is not None
 
 
 def check_gui_window():
@@ -401,6 +493,9 @@ CHECKS = [
     check_gui_field_checks,
     check_gui_beacon_text,
     check_gui_ip_scope,
+    check_gui_arm_dialog,
+    check_gui_test_job,
+    check_gui_session_reuse,
     check_gui_window,
 ]
 
