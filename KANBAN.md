@@ -18,13 +18,19 @@ Updated: 2026-11-01. Columns are Done, In progress, Backlog. Each card has an id
 - [x] **V1** Finalization: output-path guard (never writes into the archive), download trigger wired, `wtx_fileformat.py` trimmed to the parser, `tests/test_wtx.py` added. Decoder 15 checks pass, batch clean.
 - [x] **D1** `docs/FILE_FORMAT.md`, `README.md` refreshed to the final state.
 
-## In progress
+## In progress: GUI app for worldwide distribution
 
-- Nothing. The offline tool is complete.
+Plan: `docs/APP_PLAN.md`. Ledger: `.sdd/progress.md`. Build is subagent-driven:
+Haiku implements, Sonnet reviews and fixes, Fable escalates, Opus orchestrates.
+
+- [x] **G1** Session core (headless): download, discover, decode, deep logs, `run.json` metrics, results zip. Reuses `src/`. Sonnet-verified, 11 tests pass.
+- [ ] **G2** Tkinter GUI: ECU IP + input and output folder fields, buttons, live log pane, progress, metrics summary, config memory. (Haiku, in progress.)
+- [ ] **G3** Packaging: PyInstaller one-file Windows exe, `build_windows.bat`, CI workflow.
+- [ ] **Docs** `USER_GUIDE.md` (layman), `BUILD.md` (owner writes).
 
 ## Backlog
 
-- [ ] **B6** Live download off the ECU. Needs the ECU on the 192.168.111.0/24 network and the user's go-ahead, because the trigger writes a SET to the ECU and stops its logger. One wire detail (a trailing credit) is untested without the ECU. The live blob-to-members split is also not yet built (proven only for the stored files).
+- [ ] **B6** Live download off the ECU. Needs the ECU on the 192.168.111.0/24 network and the user's go-ahead, because the trigger writes a SET to the ECU and stops its logger. One wire detail (a trailing credit) is untested without the ECU. The live blob-to-members split is also not yet built (proven only for the stored files). The GUI download exercises this path for real.
 
 ## Channels left raw (with code notes)
 
