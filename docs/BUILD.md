@@ -27,9 +27,9 @@ the numpy and scipy libraries, so a user needs no Python install.
 5. Download the artifact from the run. The artifact is a zip. Extract
    `WinTAX-ECU-Downloader.exe` from it.
 
-## Verify the exe (first build)
+## Confirm the exe (first build)
 
-Test a new exe once before you send it out.
+Confirm a new exe once before you send it out.
 
 1. Run the exe.
 2. Set the output folder.
