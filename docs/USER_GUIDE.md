@@ -54,7 +54,8 @@ on the network, allow it on private networks.
 ## Step 6 (optional): Decode the data
 
 The Decode button turns a stored file into tables (CSV) and a MATLAB file. Use it
-only if your team asked for it.
+only if your team asked for it. Leave the Input box empty unless you decode a
+file.
 
 1. Click Browse next to Input.
 2. Pick a `cableData.ztx` file, or a folder that holds lap folders.
@@ -74,7 +75,8 @@ on its own. You choose when to send the zip.
 
 The app writes logs in the `logs` folder inside your output folder. Each run has a
 `.log` file and a `run_*.json` file. These files help the team find any problem.
-The Package to send step already puts them in the zip.
+The Package to send step already puts them in the zip. The logs can include your
+Windows user name inside file paths. This is normal.
 
 ## Common problems
 

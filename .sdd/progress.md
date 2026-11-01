@@ -60,3 +60,8 @@ Final review verdict: NOT mass-ready as-is; OK for owner-supervised pilot after 
 CRITICAL C1 (release gate, not a code defect): download never run on a live ECU or a real exe. Deferred to owner bench test; cannot verify offline. Includes Windows WSAECONNRESET uncaught in src/wtx_client (validate on bench, not touched offline).
 Fix wave dispatched to Sonnet: I1 nesting guard too broad (blocks Test/Download, guide example refused); I2 arm-before-writecheck; I4 zip ships foreign files + absolute paths leak Windows user name; I5 Test ignores IP box; I6 failed download no cause + overclaimed "finished"; plus minors (corrupt-zip temp-rename, status wraplength, log worker exceptions). I3 USER_GUIDE fixes by orchestrator (SmartScreen wording, firewall prompt, adapter IP, zip size, one folder per car).
 Gates before wide send: G1 live bench run of the real exe on a known ECU; G2-G5 the I-fixes; repo must stay PRIVATE (password, serial, driver name tracked).
+Fix wave complete: commit 41f1b91, 29/29 + 3/3 tests pass. I1 I2 I4 I5 I6 + 3 minors fixed.
+Ruling (accept Sonnet's calls): Input-file-equals-own-folder now allowed (a file does not nest output); free-space floor 1 GiB provisional (tune after bench); disk check runs after the confirm dialog but before the arming SET, so no arm on bad disk; error event gained hint, error="" when no exception (GUI-only consumer).
+I3 doc follow-ups done: leave Input empty unless decoding; note logs may hold the Windows user name in paths.
+Open/deferred: C1a Windows ConnectionResetError (bench gate); zip whitelist by name so earlier launches in the same folder still ship (one-folder-per-session guidance mitigates); M1-M17 minors deferred.
+Scoped re-review of the fix diff (924ce20..41f1b91): dispatched to Sonnet.

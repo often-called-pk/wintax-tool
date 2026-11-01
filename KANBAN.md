@@ -28,7 +28,7 @@ Haiku implements, Sonnet reviews and fixes, Fable escalates, Opus orchestrates.
 - [x] **G3** Packaging: PyInstaller one-file Windows exe, `build_windows.bat`, CI workflow. Sonnet-approved; Linux build and frozen-window launch verified.
 - [x] **Docs** `USER_GUIDE.md` (layman steps) and `BUILD.md` (build the exe). STE-clean.
 - [x] **Final review** whole-branch (Sonnet): code sound, safety verified, 24 tests pass. Verdict: pilot-ready, not mass-ready until gates.
-- [ ] **Fixes** I1-I6 and cheap minors (Sonnet, in progress). USER_GUIDE fixes (orchestrator, in progress).
+- [x] **Fixes** I1-I6 and cheap minors (commit 41f1b91, 29/29 tests). USER_GUIDE fixes done. Scoped re-review in progress.
 - [ ] **Gates before wide distribution**: owner bench-tests the real exe on a known ECU (the live download never ran here). Keep the repo PRIVATE (password, serial, driver name tracked).
 
 ## Backlog
