@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))  # the wtxapp package
 sys.path.insert(0, str(ROOT / "src"))  # the protocol and decode modules
 
 import wtx_client  # noqa: E402
+from wtxapp import gui  # noqa: E402
 from wtxapp.session import RunSession  # noqa: E402
 from wtxapp.gui import (DEFAULTS, TITLE, App, beacon_text, check_ip, check_output, load_config,  # noqa: E402
                         progress_text, run_if_confirmed, save_config)
@@ -306,6 +307,60 @@ def check_gui_beacon_text():
                                    "and its state is (ABS=3012,TrigOut).")
 
 
+class Field:
+    """Stand-in for a Tk StringVar. The App handlers only call get()."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+def make_app(ip, input_path, output):
+    """Return an App without a window. The button handlers read three fields. _start records its job and IP."""
+    app = App.__new__(App)
+    app.ip_var, app.in_var, app.out_var = Field(ip), Field(input_path), Field(output)
+    app.started = []
+    app._start = lambda label, found, job: app.started.append((job, found[0]))
+    return app
+
+
+def check_gui_ip_scope():
+    """Test connection and Download need a valid ECU IP. Decode, Package and Open results run offline.
+
+    This check builds no window, so it runs on any machine.
+    """
+    shown, opened = [], []
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = Path(tmp, "in"), Path(tmp, "out")
+        src.mkdir()
+        out.mkdir()
+        with mock.patch.object(gui.messagebox, "showerror", lambda title, msg: shown.append(msg)), \
+                mock.patch.object(gui.messagebox, "askyesno", lambda title, msg: True), \
+                mock.patch.object(gui, "open_folder", opened.append):
+            for ip in ("ecu.local", "999.1.1.1", ""):  # None of these is an IPv4 address.
+                app = make_app(ip, str(src), str(out))
+                app.on_decode()
+                app.on_package()
+                app.on_open()
+                used = ip or wtx_client.ECU_IP_DEFAULT  # A blank field falls back to the default.
+                assert app.started == [(gui._decode, used), (gui._package, used)], (ip, app.started)
+                assert opened == [out.resolve()] and not shown, (ip, opened, shown)
+                opened.clear()
+                app = make_app(ip, str(src), str(out))
+                app.on_test()
+                app.on_download()  # The confirm returns True, so only the IP check can stop it.
+                assert app.started == [], (ip, app.started)
+                assert len(shown) == 2 and all("IPv4" in m for m in shown), (ip, shown)
+                shown.clear()
+            app = make_app("10.0.0.7", str(src), str(out))  # A valid IP reaches all four jobs.
+            for press in (app.on_test, app.on_download, app.on_decode, app.on_package):
+                press()
+            jobs = [gui._test, gui._download, gui._decode, gui._package]
+            assert app.started == [(job, "10.0.0.7") for job in jobs] and not shown, (app.started, shown)
+
+
 def check_gui_window():
     """Build the main window, run one update and destroy it. Use xvfb-run when no display is set."""
     if sys.platform != "win32" and not os.environ.get("DISPLAY"):
@@ -345,6 +400,7 @@ CHECKS = [
     check_gui_confirm_gate,
     check_gui_field_checks,
     check_gui_beacon_text,
+    check_gui_ip_scope,
     check_gui_window,
 ]
 

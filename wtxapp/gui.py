@@ -186,23 +186,23 @@ class App:
             self.out_var.set(path)
 
     def on_test(self):
-        found = self._inputs()
+        found = self._inputs(need_ip=True)
         if found:
             self._start("The ECU search starts. Wait for the result.", found, _test)
 
     def on_download(self):
-        found = self._inputs()
+        found = self._inputs(need_ip=True)
         if found:
             run_if_confirmed(self._confirm_arm, lambda: self._start(
                 "The download starts. The ECU logger stops while the download runs.", found, _download))
 
     def on_decode(self):
-        found = self._inputs()
+        found = self._inputs(need_ip=False)
         if found:
             self._start("The decode starts. Wait for the result.", found, _decode)
 
     def on_package(self):
-        found = self._inputs()
+        found = self._inputs(need_ip=False)
         if found:
             self._start("The packing starts. Wait for the zip file.", found, _package)
 
@@ -226,10 +226,15 @@ class App:
     def _confirm_arm(self):
         return messagebox.askyesno(TITLE, "This arms the ECU and stops its logger while the download runs. Continue?")
 
-    def _inputs(self):
-        """Return (ip, output, input) when the fields pass. Otherwise show the reason and return None."""
+    def _inputs(self, need_ip):
+        """Return (ip, output, input) when the fields pass. Otherwise show the reason and return None.
+
+        Test connection and Download need a valid ECU IP.
+        Decode and Package run offline. A wrong ECU IP must not stop them. They use the field text as it is.
+        """
         try:
-            ip = check_ip(self.ip_var.get())
+            text = self.ip_var.get().strip()
+            ip = check_ip(text) if need_ip else (text or wtx_client.ECU_IP_DEFAULT)
             out = check_output(self.out_var.get(), self.in_var.get())
         except ValueError as e:
             messagebox.showerror(TITLE, str(e))
