@@ -11,8 +11,10 @@ import logging
 import os
 import platform
 import re
+import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -27,6 +29,13 @@ import wtx_client  # noqa: E402
 import wtx_decode  # noqa: E402
 
 from . import __version__  # noqa: E402
+
+# ponytail: a sample blob is 90 MB and the size is unknown before the SET. Raise the floor if blobs grow.
+MIN_FREE_BYTES = 1 << 30
+# The results zip holds only files with these names. A file that a user put in these folders stays out.
+ZIP_GLOBS = ("logs/wtx_*.log", "logs/run_*.json", "download/download_raw_*.bin", "decoded/**/summary.csv")
+# The hint after a failed download. The cause comes from the exception.
+DOWNLOAD_HINT = "Check the cable, the ECU IP and the ECU power. Close WinTAX if it runs."
 
 
 def _now():
@@ -75,6 +84,20 @@ def _lap_jobs(folder, out):
         used.add(name)
         jobs.append((ztx, out / name))
     return jobs
+
+
+def _check_disk(folder):
+    """Raise OSError when the folder cannot take a new file, or when the disk has less than MIN_FREE_BYTES free.
+
+    Call this before the SET. A failure then leaves the ECU unchanged.
+    """
+    with tempfile.TemporaryFile(dir=folder) as probe:  # The file goes away at once.
+        probe.write(b"0")
+        probe.flush()
+    free = shutil.disk_usage(folder).free
+    if free < MIN_FREE_BYTES:
+        raise OSError(f"The disk of the output folder has {free >> 20} MB free. "
+                      f"The download needs at least {MIN_FREE_BYTES >> 20} MB.")
 
 
 class RunSession:
@@ -135,14 +158,18 @@ class RunSession:
     def _write_metrics(self):
         self._metrics_path.write_text(json.dumps(self.metrics, indent=2), encoding="utf-8")
 
-    def _error(self, msg, exc=None):
-        """Record a failed step. Set the status and the error, then log it and emit an error event."""
+    def _error(self, msg, exc=None, hint=""):
+        """Record a failed step. Set the status and the error, then log it and emit an error event.
+
+        The event holds the message, the hint for the user, and the cause when exc exists.
+        The log keeps the cause and the traceback.
+        """
         kind, text = (type(exc).__name__, str(exc)) if exc else ("Error", msg)
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) if exc else ""
         self.metrics["status"] = "error"
         self.metrics["error"] = {"type": kind, "msg": text, "traceback": tb}
         self.log.error(f"{msg} ({kind}: {text})" if exc else msg, exc_info=exc)
-        self._emit({"type": "error", "msg": msg, "error": f"{kind}: {text}"})
+        self._emit({"type": "error", "msg": msg, "error": f"{kind}: {text}" if exc else "", "hint": hint})
         self._write_metrics()
 
     @contextlib.contextmanager
@@ -172,7 +199,8 @@ class RunSession:
             except OSError as e:
                 self._error("The beacon could not be read.", e)
                 return None
-        self.metrics["device"] = {"name": beacon.name, "alias": beacon.alias, "state": beacon.state}
+        self.metrics["device"] = {"name": beacon.name, "alias": beacon.alias, "state": beacon.state,
+                                  "ip": beacon.ip, "netmask": beacon.netmask}
         self.log.info("The ECU reports name=%s alias=%s state=%s.", beacon.name, beacon.alias, beacon.state)
         self._write_metrics()
         return beacon
@@ -182,9 +210,16 @@ class RunSession:
         """Download the raw data blob from the ECU. Return the blob path, or None on failure.
 
         The ECU sends no end-of-stream flag, so the metrics mark the download as unconfirmed.
+        The session checks the disk first. A full or unwritable folder stops the call before the SET.
         """
         blob = self.dir / "download" / f"download_raw_{_stamp()}.bin"
         box = {}
+        try:
+            _check_disk(blob.parent)
+        except OSError as e:
+            self._error("The download did not start.", e,
+                        "The ECU was not changed. Free some disk space or choose another output folder.")
+            return None
 
         def work():
             try:
@@ -206,20 +241,22 @@ class RunSession:
                 if size == 0:
                     raise RuntimeError("The ECU sent no data.")
             except Exception as e:
-                self._error("The download failed.", e)
+                self._error("The download failed.", e, DOWNLOAD_HINT)
                 return None
             self.metrics["download"] = {
                 # ponytail: bytes over the whole call, idle wait included. Time the last growth if that skews it.
                 "bytes": size, "throughput_bps": size / max(dur, 1e-3),
-                "out_file": str(blob), "sha256": sha,
+                # The path is relative to the output folder. An absolute path holds the Windows user name.
+                "out_file": blob.relative_to(self.dir).as_posix(), "sha256": sha,
                 # ponytail: wtx_client.download gives no clean-end flag. Add a check when the ECU can confirm one.
                 "completeness": "unconfirmed",
             }
-        self.log.info("The download finished: %d bytes, sha256 %s.", size, sha)
+        self.log.info("The download ended: %d bytes, sha256 %s.", size, sha)
         self.log.warning("The session cannot confirm that the download is complete. "
                          "The ECU sends no end-of-stream flag, so a download that ends on the idle timeout "
                          "can be partial. Confirm the data against the ECU.")
-        self._emit({"type": "done", "msg": f"The download finished: {size} bytes.", "path": str(blob)})
+        self._emit({"type": "done", "msg": f"Download complete: {size:,} bytes. Not yet verified against the ECU.",
+                    "path": str(blob)})
         self._write_metrics()
         return str(blob)
 
@@ -255,10 +292,10 @@ class RunSession:
             if not str(input_path).strip():  # Path("") is the working folder. Do not walk it.
                 self._error("The input path is empty. Choose a lap file or a folder.")
                 return None
-            tree = src if src.is_dir() else src.parent
-            # Refuse output inside the input. The input folder must stay unchanged.
-            if out.resolve().is_relative_to(tree):
-                self._error(f"The decode output {out} is inside the input folder. Choose another output folder.")
+            # Refuse output inside an input folder. The input folder must stay unchanged.
+            # An input file has no folder to protect: a new folder beside it is fine.
+            if src.is_dir() and out.resolve().is_relative_to(src):
+                self._error("The decode output folder is inside the input folder. Choose another output folder.")
                 return None
             if src.is_dir():
                 jobs = _lap_jobs(src, out)
@@ -292,21 +329,27 @@ class RunSession:
             self.log.info("The session decoded %s to %s.", ztx, dest)
 
     def package_results(self):
-        """Zip the logs, the raw downloads and the decoded summaries. Return the zip path.
+        """Zip the logs, the raw downloads and the decoded summaries that this app wrote. Return the zip path.
 
-        The zip name holds the beacon alias, else the ECU IP. The user sends this zip back.
-        Raise OSError when the zip cannot be written.
+        The zip holds only files that match ZIP_GLOBS. The zip name holds the beacon alias, else the ECU IP.
+        The user sends this zip back.
+        Raise OSError when the zip cannot be written. The call then leaves no partial zip.
         """
         self._write_metrics()
         # ponytail: the beacon has no serial field. The zip name uses the beacon alias, else the ECU IP.
         tag = self.metrics["device"].get("alias", "").strip() or self.ecu_ip
         zip_path = self.dir / f"wtx_results_{_safe(tag)}_{_stamp()}.zip"
-        files = [p for d in ("logs", "download") for p in (self.dir / d).rglob("*") if p.is_file()]
-        files += self.dir.glob("decoded/**/summary.csv")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for p in files:
-                zf.write(p, p.relative_to(self.dir).as_posix())
-        self.log.info("The session packed the results to %s.", zip_path)
+        part = zip_path.with_name(zip_path.name + ".part")
+        files = sorted(p for g in ZIP_GLOBS for p in self.dir.glob(g) if p.is_file())
+        try:
+            with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in files:
+                    zf.write(p, p.relative_to(self.dir).as_posix())
+            part.replace(zip_path)
+        finally:
+            with contextlib.suppress(OSError):
+                part.unlink()  # The rename removed it. After a failure this removes the partial zip.
+        self.log.info("The session packed %d file(s) to %s.", len(files), zip_path.name)
         return str(zip_path)
 
     def close(self):

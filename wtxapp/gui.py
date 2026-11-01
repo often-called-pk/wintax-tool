@@ -25,6 +25,7 @@ TITLE = f"WinTAX ECU Downloader {__version__}"
 CONFIG_PATH = Path.home() / ".wtxapp.json"
 DEFAULTS = {"ecu_ip": wtx_client.ECU_IP_DEFAULT, "input": "", "output": ""}
 LOG_LINES = 5000  # ponytail: the log pane keeps the last 5000 lines. The run log file keeps every line.
+WRAP = 620  # ponytail: fixed pixels. A long status text wraps here, so the window keeps its width.
 
 
 def load_config(path=CONFIG_PATH):
@@ -57,18 +58,19 @@ def check_ip(text):
 
 
 def check_output(output, input_path=""):
-    """Return the output folder. Raise ValueError when it is empty or inside the input folder.
+    """Return the output folder. Raise ValueError when it is empty or inside the Input folder.
 
-    The session writes its logs and downloads under the output folder, so the input folder must stay unchanged.
+    The session writes its logs and downloads under the output folder.
+    A Decode must leave the Input folder unchanged, so the output folder cannot lie inside it.
+    An Input that is a file, or a path that does not exist, has no folder to protect. A new folder beside it is fine.
     """
     if not output.strip():
         raise ValueError("Choose an output folder first.")
     out = Path(output.strip()).resolve()
     if input_path.strip():
         src = Path(input_path.strip()).resolve()
-        tree = src if src.is_dir() else src.parent
-        if out == tree or tree in out.parents:
-            raise ValueError("The output folder is inside the input folder. Choose another output folder.")
+        if src.is_dir() and out.is_relative_to(src):
+            raise ValueError("The output folder is inside the folder in the Input box. Choose another output folder.")
     return out
 
 
@@ -77,12 +79,25 @@ def progress_text(ev, elapsed):
     return f"{ev['bytes']:,} bytes, {ev['rate_bps'] / 1000:.1f} kB/s, {elapsed:.1f} s elapsed"
 
 
-def beacon_text(beacon):
-    """Return the result of Test connection as one status line."""
+def beacon_text(beacon, ecu_ip=None):
+    """Return the result of Test connection as one status line.
+
+    ecu_ip is the address in the ECU IP box. When the beacon shows another address, the line says so first.
+    """
     if beacon is None:
         return "No ECU found."
-    return (f"The ECU is on the network. Its name is {beacon.name}, its alias is {beacon.alias} "
+    text = (f"The ECU is on the network. Its name is {beacon.name}, its alias is {beacon.alias} "
             f"and its state is {beacon.state}.")
+    if ecu_ip and beacon.ip != ecu_ip:
+        text = (f"The IP does not match. The ECU reports {beacon.ip}, but the ECU IP box has {ecu_ip}. "
+                f"Change the box to {beacon.ip}. {text}")
+    return text
+
+
+def error_text(ev):
+    """Return the status text of an error event: the message and the hint, then the cause when the event has one."""
+    text = " ".join(part for part in (ev.get("msg") or "The run failed.", ev.get("hint")) if part)
+    return f"{text}\nCause: {ev['error']}" if ev.get("error") else text
 
 
 def run_if_confirmed(confirm, start):
@@ -101,7 +116,7 @@ def _test(s, inp):
     error = s.metrics.get("error")
     if beacon is None and error is not before:
         return {"msg": f"The ECU search failed. {error['type']}: {error['msg']}"}
-    return {"msg": beacon_text(beacon)}
+    return {"msg": beacon_text(beacon, s.ecu_ip)}  # s.ecu_ip is the address in the ECU IP box.
 
 
 def _download(s, inp):
@@ -174,7 +189,7 @@ class App:
         self.buttons = [ttk.Button(bar, text=text, command=cmd) for text, cmd in actions]
         for button in self.buttons:
             button.pack(side="left", padx=(0, 6))
-        ttk.Label(frame, textvariable=self.status).grid(row=4, column=0, columnspan=4, sticky="w")
+        ttk.Label(frame, textvariable=self.status, wraplength=WRAP).grid(row=4, column=0, columnspan=4, sticky="w")
         self.bar = ttk.Progressbar(frame, mode="indeterminate")  # ponytail: the download size is unknown, so no percent.
         self.bar.grid(row=5, column=0, columnspan=4, sticky="ew", pady=2)
         ttk.Label(frame, textvariable=self.metrics).grid(row=6, column=0, columnspan=4, sticky="w")
@@ -210,7 +225,7 @@ class App:
                 "The download starts. The ECU logger stops while the download runs.", found, _download))
 
     def on_decode(self):
-        found = self._inputs(need_ip=False)
+        found = self._inputs(need_ip=False, decode=True)
         if found:
             self._start("The decode starts. Wait for the result.", found, _decode)
 
@@ -242,19 +257,21 @@ class App:
         return messagebox.askyesno(TITLE, "This arms the ECU and stops its logger while the download runs. Continue?",
                                    default=messagebox.NO)
 
-    def _inputs(self, need_ip):
+    def _inputs(self, need_ip, decode=False):
         """Return (ip, output, input) when the fields pass. Otherwise show the reason and return None.
 
         Test connection and Download need a valid ECU IP.
         Decode and Package run offline. A wrong ECU IP must not stop them, so they get None for the IP.
+        Only Decode reads the Input box. The other buttons get an empty input, so an old Input cannot block them.
         """
+        inp = self.in_var.get().strip() if decode else ""
         try:
             ip = check_ip(self.ip_var.get()) if need_ip else None
-            out = check_output(self.out_var.get(), self.in_var.get())
+            out = check_output(self.out_var.get(), inp)
         except ValueError as e:
             messagebox.showerror(TITLE, str(e))
             return None
-        return ip, str(out), self.in_var.get().strip()
+        return ip, str(out), inp
 
     def _start(self, label, found, job):
         """Run one job on a worker thread. The window changes only on the Tk thread."""
@@ -265,12 +282,18 @@ class App:
         threading.Thread(target=self._worker, args=(*found, job), daemon=True).start()
 
     def _worker(self, ip, out, inp, job):
-        end = {}
+        end, s = {}, None
         try:
-            end = job(self._session_for(out, ip), inp) or {}
-        except Exception as e:  # Any failure must still end the job, or the buttons stay disabled.
-            self.events.put({"type": "error", "msg": f"The run stopped. {type(e).__name__}: {e}"})
-        self.events.put({"type": "end", **end})
+            s = self._session_for(out, ip)
+            end = job(s, inp) or {}
+        except Exception as e:
+            if s is None:  # The session could not start, so no log exists. Only the window can show the failure.
+                self.events.put({"type": "error", "msg": "The run stopped.", "error": f"{type(e).__name__}: {e}"})
+            else:
+                with suppress(OSError):  # The disk can be the cause. The error event goes out before the file write.
+                    s._error("The run stopped.", e)  # The log, run.json and an error event
+        finally:  # The end event must always follow, or the buttons stay disabled.
+            self.events.put({"type": "end", **end})
 
     def _session_for(self, out, ip):
         """Return the session of the output folder. Run this on the worker thread.
@@ -318,7 +341,7 @@ class App:
         elif kind == "progress":
             self.metrics.set(progress_text(ev, time.monotonic() - self.t0))
         elif kind == "error":
-            self.status.set(ev.get("msg", "The run failed."))
+            self.status.set(error_text(ev))
         elif kind == "end":
             self._busy(False)
             if ev.get("msg"):
