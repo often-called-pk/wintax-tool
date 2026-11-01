@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Headless checks of wtxapp/session.py. Run them without an ECU.
+"""Headless checks of wtxapp/session.py and wtxapp/gui.py. Run them without an ECU.
 
 The download and beacon calls are stand-ins. The decode checks read the stored
-test lap (TESTLAP) and decode it into a temporary folder.
+test lap (TESTLAP) and decode it into a temporary folder. The window check builds
+the main window on a display, or under xvfb-run. It prints SKIP when neither exists.
 
 Run with: python3 -I tests/test_app.py
 Prints PASS per check. Exits 1 on the first failure.
@@ -12,9 +13,11 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
+import tkinter
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -25,6 +28,8 @@ sys.path.insert(0, str(ROOT / "src"))  # the protocol and decode modules
 
 import wtx_client  # noqa: E402
 from wtxapp.session import RunSession  # noqa: E402
+from wtxapp.gui import (DEFAULTS, TITLE, App, beacon_text, check_ip, check_output, load_config,  # noqa: E402
+                        progress_text, run_if_confirmed, save_config)
 
 TESTLAP = ("/home/pk/Downloads/pk-backup-d-drive/Motorsports/WinTAX ORECA BASIC APPLICATION-7/"
            "Data/047 - Arjun/F4_047/Run_713_R1_047/Lap_00002991_00927/cableData.ztx")
@@ -237,6 +242,92 @@ def check_package_zip_name():
     assert zip_name(None, ecu_ip="my ecu/1").startswith("wtx_results_my_ecu_1_")
 
 
+def raises(exc, fn, *args):
+    """Return True when fn(*args) raises exc."""
+    try:
+        fn(*args)
+    except exc:
+        return True
+    return False
+
+
+def check_gui_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp, "wtxapp.json")
+        assert load_config(path) == DEFAULTS, "A missing file must give the defaults."
+        cfg = {"ecu_ip": "10.0.0.7", "input": str(Path(tmp, "in")), "output": str(Path(tmp, "out"))}
+        save_config(cfg, path)
+        assert load_config(path) == cfg, load_config(path)
+        path.write_text("{not json", encoding="utf-8")
+        assert load_config(path) == DEFAULTS, "A broken file must give the defaults."
+        path.write_text("[1, 2]", encoding="utf-8")
+        assert load_config(path) == DEFAULTS, "A file of the wrong shape must give the defaults."
+        save_config(cfg, Path(tmp, "no", "such", "dir.json"))  # An unwritable path must not raise.
+
+
+def check_gui_progress_text():
+    ev = {"type": "progress", "msg": "1536 bytes", "bytes": 1536, "rate_bps": 2048.0}
+    assert progress_text(ev, 3.5) == "1,536 bytes, 2.0 kB/s, 3.5 s elapsed", progress_text(ev, 3.5)
+    zero = {"type": "progress", "msg": "0 bytes", "bytes": 0, "rate_bps": 0.0}
+    assert progress_text(zero, 0.0) == "0 bytes, 0.0 kB/s, 0.0 s elapsed", progress_text(zero, 0.0)
+
+
+def check_gui_confirm_gate():
+    """The arming step runs only after a confirm that returns True."""
+    calls = []
+    assert run_if_confirmed(lambda: False, lambda: calls.append("arm")) is False
+    assert run_if_confirmed(lambda: "yes", lambda: calls.append("arm")) is False  # Only True counts.
+    assert calls == [], "The arming step ran without a confirm."
+    assert run_if_confirmed(lambda: True, lambda: calls.append("arm")) is True
+    assert calls == ["arm"], calls
+
+
+def check_gui_field_checks():
+    """The ECU IP must be an IPv4 address. The output folder must not sit inside the input folder."""
+    assert check_ip(" 192.168.111.254 ") == "192.168.111.254"
+    for bad in ("", "ecu.local", "999.1.1.1", "10.0.0", "fe80::1"):
+        assert raises(ValueError, check_ip, bad), bad
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp, "in")
+        lap = Path(src, "Lap")
+        lap.mkdir(parents=True)
+        assert raises(ValueError, check_output, "")
+        assert raises(ValueError, check_output, "   ")
+        assert check_output(str(Path(tmp, "out")), str(src)) == Path(tmp, "out").resolve()
+        assert check_output(str(Path(tmp, "in2")), str(src)) == Path(tmp, "in2").resolve()  # A sibling is outside.
+        assert raises(ValueError, check_output, str(src), str(src))  # The same folder.
+        assert raises(ValueError, check_output, str(Path(src, "sub")), str(src))  # Inside.
+        assert raises(ValueError, check_output, str(lap), str(Path(lap, "cableData.ztx")))  # The lap's own folder.
+
+
+def check_gui_beacon_text():
+    assert beacon_text(None) == "No ECU found."
+    assert beacon_text(BEACON) == ("The ECU is on the network. Its name is SRG_927, its alias is F4_106 "
+                                   "and its state is (ABS=3012,TrigOut).")
+
+
+def check_gui_window():
+    """Build the main window, run one update and destroy it. Use xvfb-run when no display is set."""
+    if sys.platform != "win32" and not os.environ.get("DISPLAY"):
+        if not shutil.which("xvfb-run"):
+            return "skip"
+        code = (f"import sys; sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'tests')!r}]; "
+                "import test_app; test_app.check_gui_window()")
+        subprocess.run(["xvfb-run", "-a", sys.executable, "-I", "-c", code], check=True, timeout=120)
+        return None
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError:  # DISPLAY is set, but no X server answers.
+        return "skip"
+    try:
+        App(root)
+        root.update()
+        assert root.title() == TITLE, root.title()
+    finally:
+        root.destroy()
+    return None
+
+
 CHECKS = [
     check_session_log_and_metrics,
     check_download_ok,
@@ -249,13 +340,19 @@ CHECKS = [
     check_decode_empty_path,
     check_package_results,
     check_package_zip_name,
+    check_gui_config,
+    check_gui_progress_text,
+    check_gui_confirm_gate,
+    check_gui_field_checks,
+    check_gui_beacon_text,
+    check_gui_window,
 ]
 
 if __name__ == "__main__":
     for check in CHECKS:
         try:
-            check()
+            result = check()
         except Exception as e:  # any failure ends the run with exit 1
             print(f"FAIL {check.__name__}: {type(e).__name__}: {e}")
             sys.exit(1)
-        print(f"PASS {check.__name__}")
+        print(f"{'SKIP' if result == 'skip' else 'PASS'} {check.__name__}")
