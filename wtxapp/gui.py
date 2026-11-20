@@ -57,12 +57,14 @@ def check_ip(text):
     return ip
 
 
-def check_output(output, input_path=""):
+def check_output(output, input_path="", decrypt=False):
     """Return the output folder. Raise ValueError when it is empty or inside the Input folder.
 
     The session writes its logs and downloads under the output folder.
     A Decode must leave the Input folder unchanged, so the output folder cannot lie inside it.
     An Input that is a file, or a path that does not exist, has no folder to protect. A new folder beside it is fine.
+    A Decrypt (decrypt=True) is stricter. It must leave the folder of the input file unchanged, so the output folder
+    cannot lie inside that folder.
     """
     if not output.strip():
         raise ValueError("Choose an output folder first.")
@@ -71,6 +73,8 @@ def check_output(output, input_path=""):
         src = Path(input_path.strip()).resolve()
         if src.is_dir() and out.is_relative_to(src):
             raise ValueError("The output folder is inside the folder in the Input box. Choose another output folder.")
+        if decrypt and not src.is_dir() and out.is_relative_to(src.parent):
+            raise ValueError("The output folder is inside the folder of the input file. Choose another output folder.")
     return out
 
 
@@ -131,6 +135,10 @@ def _decode(s, inp):
     s.decode(inp)
 
 
+def _decrypt(s, inp):
+    s.decrypt(inp)
+
+
 def _package(s, inp):
     zip_path = s.package_results()
     return {"msg": f"The results zip is ready: {zip_path}", "path": zip_path}
@@ -168,33 +176,47 @@ class App:
         root.rowconfigure(0, weight=1)
         frame = ttk.Frame(root, padding=10)
         frame.grid(sticky="nsew")
-        frame.columnconfigure(1, weight=1)
-        frame.rowconfigure(7, weight=1)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(4, weight=1)
 
-        ttk.Label(frame, text="ECU IP").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.ip_var).grid(row=0, column=1, columnspan=3, sticky="ew", padx=6, pady=2)
-        ttk.Label(frame, text="Input (optional)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.in_var).grid(row=1, column=1, sticky="ew", padx=6, pady=2)
-        ttk.Button(frame, text="Browse file", command=self.browse_file).grid(row=1, column=2, padx=2)
-        ttk.Button(frame, text="Browse folder", command=self.browse_folder).grid(row=1, column=3, padx=2)
-        ttk.Label(frame, text="Output folder").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.out_var).grid(row=2, column=1, sticky="ew", padx=6, pady=2)
-        ttk.Button(frame, text="Browse", command=self.browse_output).grid(row=2, column=2, columnspan=2,
-                                                                          sticky="ew", padx=2)
+        tabs = ttk.Notebook(frame)
+        tabs.grid(row=0, column=0, sticky="ew")
+        dl, adv = ttk.Frame(tabs, padding=8), ttk.Frame(tabs, padding=8)
+        tabs.add(dl, text="Download")
+        tabs.add(adv, text="Advanced")
+        self.tabs = tabs
+        self.buttons = []  # Busy gating disables every button here.
 
-        bar = ttk.Frame(frame)
-        bar.grid(row=3, column=0, columnspan=4, sticky="w", pady=6)
-        actions = (("Test connection", self.on_test), ("Download", self.on_download), ("Decode", self.on_decode),
-                   ("Open results folder", self.on_open), ("Package to send", self.on_package))
-        self.buttons = [ttk.Button(bar, text=text, command=cmd) for text, cmd in actions]
-        for button in self.buttons:
-            button.pack(side="left", padx=(0, 6))
-        ttk.Label(frame, textvariable=self.status, wraplength=WRAP).grid(row=4, column=0, columnspan=4, sticky="w")
+        def button(parent, text, cmd, **grid):
+            self.buttons.append(ttk.Button(parent, text=text, command=cmd))
+            self.buttons[-1].grid(**grid)
+
+        for tab in (dl, adv):  # Both Output boxes share out_var, so they stay equal.
+            tab.columnconfigure(1, weight=1)
+            ttk.Label(tab, text="Output folder").grid(row=0, column=0, sticky="w")
+            ttk.Entry(tab, textvariable=self.out_var).grid(row=0, column=1, sticky="ew", padx=6, pady=2)
+            ttk.Button(tab, text="Browse", command=self.browse_output).grid(row=0, column=2, padx=2)
+            button(tab, "Open results folder", self.on_open, row=0, column=3, padx=2)
+
+        ttk.Label(dl, text="ECU IP").grid(row=1, column=0, sticky="w")
+        ttk.Entry(dl, textvariable=self.ip_var).grid(row=1, column=1, sticky="ew", padx=6, pady=2)
+        button(dl, "Test connection", self.on_test, row=1, column=2, columnspan=2, sticky="ew", padx=2)
+        ttk.Label(adv, text="Input").grid(row=1, column=0, sticky="w")
+        ttk.Entry(adv, textvariable=self.in_var).grid(row=1, column=1, sticky="ew", padx=6, pady=2)
+        ttk.Button(adv, text="Browse file", command=self.browse_file).grid(row=1, column=2, padx=2)
+        ttk.Button(adv, text="Browse folder", command=self.browse_folder).grid(row=1, column=3, padx=2)
+        for tab, actions in ((dl, (("Download", self.on_download), ("Package to send", self.on_package))),
+                             (adv, (("Decode", self.on_decode), ("Decrypt", self.on_decrypt)))):
+            bar = ttk.Frame(tab)
+            bar.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            for text, cmd in actions:
+                button(bar, text, cmd, row=0, column=len(bar.winfo_children()), padx=(0, 6))
+        ttk.Label(frame, textvariable=self.status, wraplength=WRAP).grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.bar = ttk.Progressbar(frame, mode="indeterminate")  # ponytail: the download size is unknown, so no percent.
-        self.bar.grid(row=5, column=0, columnspan=4, sticky="ew", pady=2)
-        ttk.Label(frame, textvariable=self.metrics).grid(row=6, column=0, columnspan=4, sticky="w")
+        self.bar.grid(row=2, column=0, sticky="ew", pady=2)
+        ttk.Label(frame, textvariable=self.metrics).grid(row=3, column=0, sticky="w")
         self.log = scrolledtext.ScrolledText(frame, height=14, wrap="word", state="disabled")
-        self.log.grid(row=7, column=0, columnspan=4, sticky="nsew")
+        self.log.grid(row=4, column=0, sticky="nsew")
         self._job = root.after(100, self._drain)
 
     def browse_file(self):
@@ -229,6 +251,11 @@ class App:
         if found:
             self._start("The decode starts. Wait for the result.", found, _decode)
 
+    def on_decrypt(self):
+        found = self._inputs(need_ip=False, decode=True, decrypt=True)
+        if found:
+            self._start("The decrypt starts. Wait for the result.", found, _decrypt)
+
     def on_package(self):
         found = self._inputs(need_ip=False)
         if found:
@@ -257,17 +284,18 @@ class App:
         return messagebox.askyesno(TITLE, "This arms the ECU and stops its logger while the download runs. Continue?",
                                    default=messagebox.NO)
 
-    def _inputs(self, need_ip, decode=False):
+    def _inputs(self, need_ip, decode=False, decrypt=False):
         """Return (ip, output, input) when the fields pass. Otherwise show the reason and return None.
 
         Test connection and Download need a valid ECU IP.
-        Decode and Package run offline. A wrong ECU IP must not stop them, so they get None for the IP.
-        Only Decode reads the Input box. The other buttons get an empty input, so an old Input cannot block them.
+        Decode, Decrypt and Package run offline. A wrong ECU IP must not stop them, so they get None for the IP.
+        Only Decode and Decrypt read the Input box. The other buttons get an empty input, so an old Input cannot block them.
+        Decrypt (decrypt=True) also refuses an output folder inside the folder of the input file.
         """
         inp = self.in_var.get().strip() if decode else ""
         try:
             ip = check_ip(self.ip_var.get()) if need_ip else None
-            out = check_output(self.out_var.get(), inp)
+            out = check_output(self.out_var.get(), inp, decrypt)
         except ValueError as e:
             messagebox.showerror(TITLE, str(e))
             return None

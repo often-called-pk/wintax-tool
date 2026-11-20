@@ -74,6 +74,14 @@ def _members(data):
         p += 46 + nlen + elen + clen
 
 
+def _dst(out_dir, name):
+    """Return the output path of one member. Raise ValueError when the member name points outside out_dir."""
+    dst = Path(out_dir) / name
+    if not dst.resolve().is_relative_to(Path(out_dir).resolve()):
+        raise ValueError(f"unsafe member name in the archive: {name!r} points outside the output folder")
+    return dst
+
+
 def decrypt_ztx(ztx_path, out_dir, password):
     data = Path(ztx_path).read_bytes()  # ponytail: whole .ztx (a few MB); members are bounded
     out_dir = Path(out_dir)
@@ -86,7 +94,7 @@ def decrypt_ztx(ztx_path, out_dir, password):
         got = zlib.crc32(raw) & 0xFFFFFFFF
         good = got == crc
         ok &= good
-        dst = out_dir / name
+        dst = _dst(out_dir, name)
         dst.write_bytes(raw)
         print(f"{name:14s} {len(raw):>9d} B  crc=0x{got:08X}  {'OK' if good else 'CRC MISMATCH'}  -> {dst}")
     return ok

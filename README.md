@@ -34,7 +34,8 @@ As a Windows exe, for the people you ship the app to:
 2. The user double-clicks the exe. The exe needs no Python install.
 
 For the window itself, see `docs/USER_GUIDE.md`. It covers the ECU IP field, the
-output folder, Test connection, Download, and Package to send.
+output folder, Test connection, Download, and Package to send. The Advanced tab
+has Decode and Decrypt.
 
 ## Layout
 

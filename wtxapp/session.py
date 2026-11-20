@@ -25,6 +25,7 @@ from pathlib import Path
 
 # python -I does not add the script folder to sys.path. Add the sibling src/ folder.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import decrypt_ztx  # noqa: E402
 import wtx_client  # noqa: E402
 import wtx_decode  # noqa: E402
 
@@ -315,6 +316,37 @@ class RunSession:
                 self._error(f"The session decoded no lap from {src}. Check the path.")
                 return None
         self._emit({"type": "done", "msg": f"The session decoded {done} of {len(jobs)} lap(s).", "path": str(out)})
+        return str(out)
+
+    def decrypt(self, input_path):
+        """Decrypt one cableData.ztx file. Return the decrypted folder, or None.
+
+        Output goes to <output_dir>/decrypted. The session writes nothing in the folder of the input file.
+        """
+        src = Path(input_path).resolve()
+        out = self.dir / "decrypted"
+        with self._phase("decrypt"):
+            if not str(input_path).strip():  # Path("") is the working folder.
+                self._error("The input path is empty. Choose a cableData.ztx file.")
+                return None
+            if src.is_dir():
+                self._error("Decrypt needs one cableData.ztx file. Choose a file, not a folder.")
+                return None
+            if src.suffix.lower() != ".ztx":
+                self._error("Decrypt needs a .ztx file. Choose a cableData.ztx file.")
+                return None
+            if out.resolve().is_relative_to(src.parent):  # The data folder must stay unchanged.
+                self._error("The decrypt output folder is inside the folder of the input file. "
+                            "Choose another output folder.")
+                return None
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = decrypt_ztx.decrypt_ztx(src, out, decrypt_ztx.PASSWORD)
+            self.log.info("The decrypt table follows: %s", buf.getvalue())
+            if not ok:
+                self._error("At least one member of the file failed the CRC check. The file can be damaged.")
+                return None
+        self._emit({"type": "done", "msg": f"The session decrypted {src.name} to {out}.", "path": str(out)})
         return str(out)
 
     def _decode_lap(self, ztx, dest):

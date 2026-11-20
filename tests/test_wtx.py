@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+import decrypt_ztx  # noqa: E402
 import wtx  # noqa: E402
 import wtx_client as c  # noqa: E402
 
@@ -146,6 +147,13 @@ def test_outdir_guard():
             os.chdir(here)
         assert sorted(p.name for p in d.rglob("*")) == ["Lap_1", "data", "work"]  # nothing was written
         assert wtx.outdir_for(str(work / "o"), lap) == work / "o"
+        assert decrypt_ztx._dst(work, "lap.bin") == work / "lap.bin"
+        for name in ("../x", "a/../../x", "/tmp/x"):  # A member name must not leave the output folder.
+            try:
+                decrypt_ztx._dst(work, name)
+            except ValueError:
+                continue
+            raise AssertionError(name)
         try:
             os.chdir(work)
             assert wtx.outdir_for(None, lap) == work / "out"  # the default is <cwd>/out

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))  # the wtxapp package
 sys.path.insert(0, str(ROOT / "src"))  # the protocol and decode modules
 
 import wtx_client  # noqa: E402
-from wtxapp import gui  # noqa: E402
+from wtxapp import gui, session  # noqa: E402
 from wtxapp.session import RunSession  # noqa: E402
 from wtxapp.gui import (DEFAULTS, TITLE, App, beacon_text, check_ip, check_output, load_config,  # noqa: E402
                         progress_text, run_if_confirmed, save_config)
@@ -271,6 +271,54 @@ def check_decode_empty_path():
         assert not Path(tmp, "session", "decoded").exists(), "The decode walked the working folder."
 
 
+def check_decrypt_real_lap():
+    lap_dir = os.path.dirname(TESTLAP)
+    before = listing(lap_dir)
+    with tempfile.TemporaryDirectory() as tmp:
+        with RunSession(tmp) as s:
+            out = s.decrypt(TESTLAP)
+            assert out and Path(out).name == "decrypted" and any(Path(out).iterdir()), out
+        assert s.metrics["status"] == "ok", s.metrics
+    assert listing(lap_dir) == before, "The input lap folder changed."
+
+
+def check_decrypt_refusals():
+    """A folder, an empty path, a non-ztx file and an output beside the input are refused. No output is written."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp, "in")
+        src.mkdir()
+        txt = src / "a.txt"
+        txt.write_text("x")
+        for bad in (src, "", "  ", txt):
+            with RunSession(Path(tmp, "session")) as s:
+                assert s.decrypt(bad) is None, bad
+            assert s.metrics["status"] == "error", (bad, s.metrics)
+        assert not Path(tmp, "session", "decrypted").exists()
+        ztx = src / "cableData.ztx"
+        shutil.copy(TESTLAP, ztx)
+        # The output folder <src>/decrypted lies beside the input file. The session itself writes its logs
+        # in <src>. The window refuses this case before the session starts (check_gui_decrypt_output).
+        with RunSession(src) as s:
+            assert s.decrypt(ztx) is None
+        assert not Path(src, "decrypted").exists(), "The decrypt wrote its output inside the data folder."
+
+
+def check_decrypt_crc_failure():
+    """A member that fails the CRC check gives None and an error event. No done event follows."""
+    events = []
+    with tempfile.TemporaryDirectory() as tmp:
+        ztx = Path(tmp, "in", "cableData.ztx")
+        ztx.parent.mkdir()
+        ztx.write_bytes(b"x")  # The stand-in does not read it.
+        with mock.patch.object(session.decrypt_ztx, "decrypt_ztx", return_value=False) as fake, \
+                RunSession(Path(tmp, "session"), on_event=events.append) as s:
+            assert s.decrypt(ztx) is None
+        assert fake.call_count == 1
+        kinds = [e["type"] for e in events]
+        assert "error" in kinds and "done" not in kinds, kinds
+        assert s.metrics["status"] == "error", s.metrics
+
+
 def check_package_results():
     with tempfile.TemporaryDirectory() as tmp:
         with mock.patch.object(wtx_client, "download", fake_download):
@@ -456,7 +504,7 @@ def make_app(ip, input_path, output):
 
 
 def check_gui_ip_scope():
-    """Test connection and Download need a valid ECU IP. Decode, Package and Open results run offline.
+    """Test connection and Download need a valid ECU IP. Decode, Decrypt, Package and Open results run offline.
 
     An offline job gets no IP. This check builds no window, so it runs on any machine.
     """
@@ -471,9 +519,10 @@ def check_gui_ip_scope():
             for ip in ("ecu.local", "999.1.1.1", ""):  # None of these is an IPv4 address.
                 app = make_app(ip, str(src), str(out))
                 app.on_decode()
+                app.on_decrypt()
                 app.on_package()
                 app.on_open()
-                assert app.started == [(gui._decode, None), (gui._package, None)], (ip, app.started)
+                assert app.started == [(gui._decode, None), (gui._decrypt, None), (gui._package, None)], (ip, app.started)
                 assert opened == [out.resolve()] and not shown, (ip, opened, shown)
                 opened.clear()
                 app = make_app(ip, str(src), str(out))
@@ -482,11 +531,12 @@ def check_gui_ip_scope():
                 assert app.started == [], (ip, app.started)
                 assert len(shown) == 2 and all("IPv4" in m for m in shown), (ip, shown)
                 shown.clear()
-            app = make_app("10.0.0.7", str(src), str(out))  # A valid IP reaches all four jobs. Only two use it.
-            for press in (app.on_test, app.on_download, app.on_decode, app.on_package):
+            app = make_app("10.0.0.7", str(src), str(out))  # A valid IP reaches all five jobs. Only two use it.
+            for press in (app.on_test, app.on_download, app.on_decode, app.on_decrypt, app.on_package):
                 press()
             ecu = "10.0.0.7"
-            expected = [(gui._test, ecu), (gui._download, ecu), (gui._decode, None), (gui._package, None)]
+            expected = [(gui._test, ecu), (gui._download, ecu), (gui._decode, None), (gui._decrypt, None),
+                        (gui._package, None)]
             assert app.started == expected and not shown, (app.started, shown)
 
 
@@ -607,6 +657,28 @@ def check_gui_input_scope():
                 assert [job for job, _ in founds] == [gui._decode] and not shown, (case, founds, shown)
 
 
+def check_gui_decrypt_output():
+    """Decrypt refuses an output folder inside the folder of the input file. No job starts and the folder stays unchanged."""
+    shown = []
+    with tempfile.TemporaryDirectory() as tmp:
+        lap = Path(tmp, "Lap")
+        lap.mkdir()
+        ztx = lap / "cableData.ztx"
+        ztx.write_bytes(b"x")
+        before = listing(lap)
+        with mock.patch.object(gui.messagebox, "showerror", lambda title, msg: shown.append(msg)):
+            for out in (lap, lap / "out"):
+                app = make_app("", str(ztx), str(out))
+                app.on_decrypt()
+                assert app.started == [] and app.session is None, (out, app.started)
+                assert len(shown) == 1 and "folder of the input file" in shown[0], (out, shown)
+                shown.clear()
+            app = make_app("", str(ztx), str(Path(tmp, "out")))  # An output folder outside the lap folder starts.
+            app.on_decrypt()
+            assert app.started == [(gui._decrypt, None)] and not shown, (app.started, shown)
+        assert listing(lap) == before, "The refused decrypt changed the lap folder."
+
+
 def check_gui_test_ip_mismatch():
     """I5: Test connection says so when the ECU reports another IP than the ECU IP box holds."""
     with tempfile.TemporaryDirectory() as tmp, \
@@ -715,6 +787,11 @@ def check_gui_window():
         app = App(root)
         root.update()
         assert root.title() == TITLE, root.title()
+        tabs = [app.tabs.tab(t, "text") for t in app.tabs.tabs()]
+        assert tabs == ["Download", "Advanced"], tabs
+        labels = sorted(b.cget("text") for b in app.buttons)
+        assert labels == sorted(["Open results folder"] * 2 + ["Test connection", "Download", "Package to send",
+                                                              "Decode", "Decrypt"]), labels
         # A long status text must wrap. It must not make the window wider.
         label = find_label(root, app.status)
         wrap = int(str(label.cget("wraplength")))
@@ -740,6 +817,9 @@ CHECKS = [
     check_decode_refuses_output_inside_input,
     check_decode_file_beside_output,
     check_decode_empty_path,
+    check_decrypt_real_lap,
+    check_decrypt_refusals,
+    check_decrypt_crc_failure,
     check_package_results,
     check_package_zip_name,
     check_package_foreign_files,
@@ -754,6 +834,7 @@ CHECKS = [
     check_gui_test_job,
     check_gui_session_reuse,
     check_gui_input_scope,
+    check_gui_decrypt_output,
     check_gui_test_ip_mismatch,
     check_gui_download_failure_text,
     check_gui_worker_errors,

@@ -19,16 +19,19 @@ and you send one file back.
 
 Double-click `WinTAX-ECU-Downloader.exe`. Windows can show a blue box, "Windows
 protected your PC". Click "More info", then "Run anyway". The app is new and
-unsigned, so Windows warns one time. The window opens.
+unsigned, so Windows warns one time. The window opens with two tabs: Download and
+Advanced. The Download tab opens first. Steps 2 to 5 and Step 7 use the Download
+tab.
 
 ## Step 2: Set the ECU IP address
 
-The ECU IP box shows `192.168.111.254`. This is the normal address. Change it only
+The ECU IP box on the Download tab shows `192.168.111.254`. This is the normal address. Change it only
 if your team told you a different address.
 
 ## Step 3: Choose the output folder
 
-Click Browse next to Output folder. Pick an empty folder, for example a new folder
+Click Browse next to Output folder. The Advanced tab has the same Output folder
+box. Both boxes always show the same folder. Pick an empty folder, for example a new folder
 on your Desktop. The app writes the data, the logs, and the result file here. Use
 a separate output folder for each car or each session. This keeps the results
 apart.
@@ -51,19 +54,35 @@ on the network, allow it on private networks.
    cable.
 4. The app shows the result when the download finishes.
 
-## Step 6 (optional): Decode the data
+## Step 6 (optional): Decode or decrypt the data
 
-The Decode button turns a stored file into tables (CSV) and a MATLAB file. Use it
-only if your team asked for it. Leave the Input box empty unless you decode a
-file.
+Use the Advanced tab only if your team asked for it. The Output folder box on this
+tab is the same box as on the Download tab.
 
-1. Click Browse next to Input.
+To decode the data:
+
+1. Click Browse file or Browse folder next to Input.
 2. Pick a `cableData.ztx` file, or a folder that holds lap folders.
 3. Click Decode.
 
+The Decode button turns each file into tables (CSV) and a MATLAB file. The app
+writes them in the `decoded` folder inside your output folder.
+
+To decrypt the data:
+
+1. Click Browse file next to Input.
+2. Pick one `cableData.ztx` file. Decrypt does not accept a folder.
+3. Click Decrypt.
+
+The Decrypt button opens the protected `.ztx` file. The app writes the plain files
+that were inside it in the `decrypted` folder inside your output folder. The app
+does not change the input file. Choose an output folder outside the folder of the
+`.ztx` file. The app refuses an output folder in that folder. The Package to send step does not put the `decrypted` folder in
+the zip.
+
 ## Step 7: Send the result back
 
-1. Click Package to send. The app makes one zip file in your output folder.
+1. Open the Download tab. Click Package to send. The app makes one zip file in your output folder.
 2. The app opens the folder and shows the zip name.
 3. Send that one zip file to the person who gave you this app.
 
