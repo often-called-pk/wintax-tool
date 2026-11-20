@@ -9,6 +9,29 @@ Read the team's stored telemetry and download recordings off the Marelli F4 GEN2
 - Exports to MATLAB `.mat` and CSV.
 - Downloads a recording off the ECU over Ethernet (client coded to the captured protocol, validated offline).
 
+## Run the GUI
+
+The desktop app puts the download and decode functions in a window. There are
+two ways to open it.
+
+From source, for a developer with Python installed:
+
+```
+cd <repo folder>
+python3 -m wtxapp
+```
+
+This needs Python 3, numpy, and scipy. A window titled "WinTAX ECU Downloader"
+opens. The command `python3 run_app.py` does the same thing.
+
+As a Windows exe, for the people you ship the app to:
+
+1. Build `WinTAX-ECU-Downloader.exe` one time. See `docs/BUILD.md`.
+2. The user double-clicks the exe. The exe needs no Python install.
+
+For the window itself, see `docs/USER_GUIDE.md`. It covers the ECU IP field, the
+output folder, Test connection, Download, and Package to send.
+
 ## Layout
 
 - `src/decrypt_ztx.py` : decrypt a `cableData.ztx` into its three members.
@@ -21,6 +44,9 @@ Read the team's stored telemetry and download recordings off the Marelli F4 GEN2
 - `docs/WIRE_PROTOCOL.md` : the ECU download protocol.
 - `docs/DECRYPT.md` : the ZipCrypto key and method.
 - `artifacts/` : the plaintext download reassembled from the packet capture.
+- `wtxapp/` : the desktop GUI app, with the session core and the Tkinter window.
+- `run_app.py`, `wtxapp.spec`, `build_windows.bat` : the exe entry, the PyInstaller spec, and the build script.
+- `docs/USER_GUIDE.md` : how a user runs the window. `docs/BUILD.md` : how to build the exe.
 
 ## Usage
 
