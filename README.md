@@ -11,10 +11,14 @@ Read the team's stored telemetry and download recordings off the Marelli F4 GEN2
 
 ## Run the GUI
 
-The desktop app puts the download and decode functions in a window. There are
-two ways to open it.
+The desktop app puts the download and decode functions in a window.
 
-From source, for a developer with Python installed:
+The simplest way checks the requirements and opens the GUI in one step. On Linux
+or macOS run `./start.sh`. On Windows double-click `start.bat`. The script builds
+a local `.venv`, installs numpy and scipy, runs the tests, then opens the window.
+Pass `--no-tests` to skip the tests, or `--no-gui` to set up without a launch.
+
+From source, for a developer who already has the dependencies:
 
 ```
 cd <repo folder>

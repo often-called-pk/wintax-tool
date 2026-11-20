@@ -8,3 +8,4 @@ dist/
 *.zip
 artifacts/*.bin
 .sdd/*.diff
+.venv/

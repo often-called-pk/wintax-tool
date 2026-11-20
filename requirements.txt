@@ -1,0 +1,5 @@
+# Runtime dependencies for the WinTAX ECU Downloader GUI.
+# tkinter ships with Python. On Linux it is a system package: python3-tk.
+# pyinstaller is only needed to build the Windows exe, see docs/BUILD.md.
+numpy
+scipy
